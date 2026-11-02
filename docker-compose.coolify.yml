@@ -1,0 +1,104 @@
+# Coolify deployment using InvenTree's official stable image.
+# The upstream application source and license remain in this repository.
+x-inventree-environment: &inventree-environment
+  INVENTREE_DB_ENGINE: postgresql
+  INVENTREE_DB_NAME: inventree
+  INVENTREE_DB_USER: inventree
+  INVENTREE_DB_PASSWORD: ${SERVICE_PASSWORD_INVENTREEDB}
+  INVENTREE_DB_HOST: database
+  INVENTREE_DB_PORT: "5432"
+  INVENTREE_CACHE_ENABLED: "True"
+  INVENTREE_CACHE_HOST: cache
+  INVENTREE_CACHE_PORT: "6379"
+  INVENTREE_SITE_URL: ${SERVICE_URL_PROXY_80}
+  INVENTREE_USE_X_FORWARDED_HOST: "True"
+  INVENTREE_USE_X_FORWARDED_PORT: "True"
+  INVENTREE_USE_X_FORWARDED_PROTO: "True"
+  INVENTREE_WEB_PORT: "8000"
+  INVENTREE_AUTO_UPDATE: "True"
+  INVENTREE_ADMIN_USER: ${INVENTREE_ADMIN_USER}
+  INVENTREE_ADMIN_PASSWORD: ${INVENTREE_ADMIN_PASSWORD}
+  INVENTREE_ADMIN_EMAIL: ${INVENTREE_ADMIN_EMAIL}
+
+services:
+  database:
+    image: postgres:17
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdb
+      POSTGRES_DB: inventree
+      POSTGRES_USER: inventree
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_INVENTREEDB}
+    volumes:
+      - inventree-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventree -d inventree"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  initialize:
+    image: inventree/inventree:stable
+    command: invoke update --skip-backup
+    environment: *inventree-environment
+    volumes:
+      - inventree-data:/home/inventree/data
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    image: inventree/inventree:stable
+    environment: *inventree-environment
+    volumes:
+      - inventree-data:/home/inventree/data
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "invoke server-health --address http://localhost:8000"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  worker:
+    image: inventree/inventree:stable
+    command: invoke worker
+    environment: *inventree-environment
+    volumes:
+      - inventree-data:/home/inventree/data
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2-alpine
+    environment:
+      SERVICE_URL_PROXY_80: /
+    volumes:
+      - ./Caddyfile.coolify:/etc/caddy/Caddyfile:ro
+      - inventree-data:/inventree:ro
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  inventree-db:
+  inventree-data:
