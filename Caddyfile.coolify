@@ -1,0 +1,21 @@
+:80 {
+    encode gzip
+    request_body {
+        max_size 100MB
+    }
+    handle_path /static/* {
+        root * /inventree/static
+        file_server
+    }
+    handle_path /media/* {
+        root * /inventree/media
+        file_server
+        header Content-Disposition attachment
+        forward_auth server:8000 {
+            uri /auth/
+        }
+    }
+    handle {
+        reverse_proxy server:8000
+    }
+}
